@@ -1,9 +1,38 @@
-use std::os::unix::fs::PermissionsExt;
+use std::env;
 use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
+    let current_exe = env::current_exe().unwrap();
+    let target_path = Path::new("/usr/local/bin/deskimage");
+
+    if current_exe != target_path {
+        println!("📦 DeskImage is not installed globally.");
+        println!("⚙️  Do you want to install it to /usr/local/bin? [y/N]");
+
+        let mut choice = String::new();
+        io::stdin().read_line(&mut choice).unwrap();
+
+        if choice.trim().to_lowercase() == "y" {
+            let status = Command::new("sudo")
+                .arg("cp")
+                .arg(&current_exe)
+                .arg(target_path)
+                .status()
+                .expect("Failed to execute sudo cp");
+
+            if status.success() {
+                println!("✅ Installed to /usr/local/bin. Now you can run `deskimage` globally.");
+            } else {
+                eprintln!("❌ Failed to install. Are you sure you have sudo?");
+            }
+            return;
+        }
+    }
+
     println!("🖼️  Enter path to your AppImage file:");
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
@@ -43,3 +72,4 @@ Categories=Utility;
 
     println!("✅ Desktop entry created at: {}", desktop_file_path.display());
 }
+
