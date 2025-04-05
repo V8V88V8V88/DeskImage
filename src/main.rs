@@ -43,7 +43,9 @@ fn main() {
         return;
     }
 
-    let appname = appimage_path.file_stem().unwrap().to_string_lossy().to_string();
+    let original_name = appimage_path.file_name().unwrap().to_string_lossy();
+let appname = clean_app_name(&original_name);
+
     let exec_target = dirs::home_dir().unwrap().join(".local/bin").join(&appname);
 
     fs::create_dir_all(exec_target.parent().unwrap()).unwrap();
@@ -73,3 +75,11 @@ Categories=Utility;
     println!("✅ Desktop entry created at: {}", desktop_file_path.display());
 }
 
+fn clean_app_name(filename: &str) -> String {
+    let base = filename
+        .trim_end_matches(".AppImage")
+        .split(|c: char| c == '-' || c == '_')
+        .next()
+        .unwrap_or(filename);
+    base.to_string()
+}
