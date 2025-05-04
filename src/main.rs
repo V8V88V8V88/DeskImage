@@ -1,11 +1,25 @@
-use std::env;
-use std::fs;
-use std::io::{self};
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod gui;
 
 fn main() {
+    // Initialize logging
+    env_logger::init();
+    
+    // Launch the GUI version
+    if let Err(e) = gui::run_gui() {
+        eprintln!("Error running GUI: {}", e);
+    }
+}
+
+// CLI implementation, now unused
+#[allow(dead_code)]
+fn run_cli() {
+    use std::env;
+    use std::fs;
+    use std::io::{self};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     let current_exe = env::current_exe().unwrap();
     let target_path = Path::new("/usr/local/bin/deskimage");
 
@@ -44,7 +58,7 @@ fn main() {
     }
 
     let original_name = appimage_path.file_name().unwrap().to_string_lossy();
-let appname = clean_app_name(&original_name);
+    let appname = clean_app_name(&original_name);
 
     let exec_target = dirs::home_dir().unwrap().join(".local/bin").join(&appname);
 
