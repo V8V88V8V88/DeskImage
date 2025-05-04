@@ -7,6 +7,7 @@ use std::process::Command;
 
 pub struct DeskImageApp {
     appimage_path: Option<PathBuf>,
+    icon_path: Option<PathBuf>,
     status_message: String,
     is_installed: bool,
 }
@@ -23,6 +24,7 @@ impl Default for DeskImageApp {
 
         Self {
             appimage_path: None,
+            icon_path: None,
             status_message: "Select an AppImage file to create a desktop entry".to_string(),
             is_installed,
         }
@@ -57,6 +59,18 @@ impl DeskImageApp {
             .pick_file() {
             self.appimage_path = Some(path.clone());
             self.status_message = format!("Selected: {}", path.display());
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn select_icon(&mut self) -> bool {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Icons", &["png", "svg", "xpm", "jpg", "jpeg"])
+            .pick_file() {
+            self.icon_path = Some(path.clone());
+            self.status_message = format!("Selected icon: {}", path.display());
             true
         } else {
             false
@@ -124,7 +138,7 @@ impl DeskImageApp {
                         if let Ok(content) = fs::read_to_string(&desktop_file_path) {
                             let values = self.parse_desktop_file(&content);
                             
-                            // Preserve the custom icon if it exists
+                            // Preserve the custom icon if it exists and no new one is selected
                             if let Some(icon) = values.get("Icon") {
                                 existing_icon = icon.clone();
                             }
@@ -155,12 +169,53 @@ impl DeskImageApp {
                         }
                     }
                     
-                    // Create desktop entry content with preserved values
+                    // Handle custom icon if selected
+                    let icon_value = if let Some(icon_path) = &self.icon_path {
+                        // Copy the icon to the local icons directory if it exists
+                        if icon_path.exists() {
+                            let icon_filename = icon_path.file_name().unwrap().to_string_lossy();
+                            let icon_destination = home_dir
+                                .join(".local/share/icons")
+                                .join(&*icon_filename);
+                            
+                            // Create icons directory if it doesn't exist
+                            if let Err(e) = fs::create_dir_all(icon_destination.parent().unwrap()) {
+                                self.status_message = format!("⚠️ Couldn't create icons directory: {}", e);
+                                // Continue with the original path as fallback
+                                icon_path.to_string_lossy().to_string()
+                            } else {
+                                // Copy the icon file
+                                if let Err(e) = fs::copy(icon_path, &icon_destination) {
+                                    self.status_message = format!("⚠️ Couldn't copy icon: {}", e);
+                                    // Continue with the original path as fallback
+                                    icon_path.to_string_lossy().to_string()
+                                } else {
+                                    // Use the icon name without path for the desktop entry
+                                    // If it's in the standard location, this is sufficient
+                                    let name_only = Path::new(&*icon_filename)
+                                        .file_stem().unwrap_or_default()
+                                        .to_string_lossy();
+                                        
+                                    // Try to use just the name without extension if it's in the standard location
+                                    // Otherwise use the full path
+                                    icon_destination.to_string_lossy().to_string()
+                                }
+                            }
+                        } else {
+                            // Icon doesn't exist, fall back to default
+                            existing_icon
+                        }
+                    } else {
+                        // No new icon selected, use existing
+                        existing_icon
+                    };
+                    
+                    // Create desktop entry content with preserved or new icon value
                     let mut desktop_content = format!(
                         "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nTerminal=false\n",
                         appname,
                         exec_target.to_string_lossy(),
-                        existing_icon
+                        icon_value
                     );
                     
                     // Add optional fields if they exist
@@ -326,6 +381,38 @@ impl eframe::App for DeskImageApp {
                                 .inner_margin(10.0)
                                 .show(ui, |ui| {
                                     ui.label(RichText::new(&path_text).monospace().size(14.0));
+                                });
+                            
+                            ui.add_space(20.0);
+
+                            // Custom icon selection button
+                            let icon_button = egui::Button::new(RichText::new("Select Custom Icon").size(16.0).strong())
+                                .min_size(Vec2::new(250.0, 45.0))
+                                .fill(Color32::from_rgb(60, 100, 100));
+                            
+                            if ui.add(icon_button).clicked() {
+                                self.select_icon();
+                            }
+                            
+                            ui.add_space(15.0);
+                            
+                            // Show selected icon path with styling
+                            ui.label(RichText::new("Custom icon:").size(14.0).color(Color32::from_rgb(170, 170, 190)));
+                            
+                            let icon_text = if let Some(path) = &self.icon_path {
+                                path.display().to_string()
+                            } else {
+                                "Default icon will be used".to_string()
+                            };
+                            
+                            // Display the icon path in a bordered frame
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(25, 25, 35))
+                                .corner_radius(8)
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(50, 50, 70)))
+                                .inner_margin(10.0)
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new(&icon_text).monospace().size(14.0));
                                 });
                             
                             ui.add_space(20.0);
