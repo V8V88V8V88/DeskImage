@@ -4,10 +4,66 @@ fn main() {
     // Initialize logging
     env_logger::init();
     
+    // Ensure application directories exist
+    ensure_app_dirs();
+    
     // Launch the GUI version
     if let Err(e) = gui::run_gui() {
         eprintln!("Error running GUI: {}", e);
     }
+}
+
+// Ensure application directories exist
+fn ensure_app_dirs() -> bool {
+    use std::fs;
+    
+    let home_dir = match dirs::home_dir() {
+        Some(dir) => dir,
+        None => {
+            eprintln!("Could not determine home directory");
+            return false;
+        }
+    };
+    
+    let local_bin = home_dir.join(".local/bin");
+    let local_share = home_dir.join(".local/share");
+    let local_apps = match dirs::data_dir() {
+        Some(dir) => dir.join("applications"),
+        None => home_dir.join(".local/share/applications"),
+    };
+    let local_icons = home_dir.join(".local/share/icons");
+    
+    println!("Local bin directory: {}", local_bin.display());
+    println!("Local share directory: {}", local_share.display());
+    println!("Applications directory: {}", local_apps.display());
+    println!("Icons directory: {}", local_icons.display());
+    
+    // Create directories if they don't exist
+    let directories = vec![
+        ("bin", local_bin),
+        ("share", local_share),
+        ("applications", local_apps),
+        ("icons", local_icons),
+    ];
+    
+    for (name, path) in directories {
+        if !path.exists() {
+            println!("Creating {} directory: {}", name, path.display());
+            if let Err(e) = fs::create_dir_all(&path) {
+                eprintln!("Error creating {} directory: {}", name, e);
+                continue;
+            }
+        }
+    }
+    
+    // Check for environment variables
+    if let Some(val) = std::env::var_os("XDG_DATA_HOME") {
+        println!("XDG_DATA_HOME is set to: {:?}", val);
+    } else {
+        println!("XDG_DATA_HOME is not set");
+    }
+    
+    true
 }
 
 // CLI implementation, now unused

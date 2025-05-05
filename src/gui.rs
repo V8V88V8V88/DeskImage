@@ -10,6 +10,8 @@ pub struct DeskImageApp {
     icon_path: Option<PathBuf>,
     status_message: String,
     is_installed: bool,
+    status_visible: bool,
+    status_timestamp: std::time::Instant,
 }
 
 impl Default for DeskImageApp {
@@ -27,11 +29,21 @@ impl Default for DeskImageApp {
             icon_path: None,
             status_message: "Select an AppImage file to create a desktop entry".to_string(),
             is_installed,
+            status_visible: true,
+            status_timestamp: std::time::Instant::now(),
         }
     }
 }
 
 impl DeskImageApp {
+    // Add a helper method to update status messages
+    fn update_status(&mut self, message: String) {
+        println!("Status update: {}", message);
+        self.status_message = message;
+        self.status_timestamp = std::time::Instant::now();
+        self.status_visible = true;
+    }
+
     fn install_globally(&mut self) {
         let current_exe = std::env::current_exe().unwrap_or_default();
         let target_path = Path::new("/usr/local/bin/deskimage");
@@ -44,11 +56,11 @@ impl DeskImageApp {
 
         match status {
             Ok(status) if status.success() => {
-                self.status_message = "✅ Installed to /usr/local/bin. Now you can run `deskimage` globally.".to_string();
+                self.update_status("SUCCESS: Installed to /usr/local/bin. Now you can run `deskimage` globally.".to_string());
                 self.is_installed = true;
             }
             _ => {
-                self.status_message = "❌ Failed to install. Are you sure you have sudo permissions?".to_string();
+                self.update_status("ERROR: Failed to install. Are you sure you have sudo permissions?".to_string());
             }
         }
     }
@@ -57,8 +69,29 @@ impl DeskImageApp {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("AppImage", &["AppImage"])
             .pick_file() {
+            
+            // Make the AppImage executable when it's selected
+            if !self.is_executable(&path) {
+                println!("AppImage is not executable, setting executable permissions");
+                
+                if let Err(e) = self.make_executable(&path) {
+                    println!("Warning: Couldn't set permissions on source AppImage: {}", e);
+                    self.update_status(format!("WARNING: Couldn't make AppImage executable: {}", e));
+                } else {
+                    // Verify the AppImage is now executable
+                    if self.is_executable(&path) {
+                        println!("Successfully made AppImage executable: {}", path.display());
+                    } else {
+                        println!("Warning: AppImage may not be executable despite permissions change");
+                        self.update_status(format!("WARNING: AppImage may not be executable despite permissions change"));
+                    }
+                }
+            } else {
+                println!("AppImage is already executable: {}", path.display());
+            }
+            
             self.appimage_path = Some(path.clone());
-            self.status_message = format!("Selected: {}", path.display());
+            self.update_status(format!("Selected: {}", path.display()));
             true
         } else {
             false
@@ -70,7 +103,7 @@ impl DeskImageApp {
             .add_filter("Icons", &["png", "svg", "xpm", "jpg", "jpeg"])
             .pick_file() {
             self.icon_path = Some(path.clone());
-            self.status_message = format!("Selected icon: {}", path.display());
+            self.update_status(format!("Selected icon: {}", path.display()));
             true
         } else {
             false
@@ -93,40 +126,99 @@ impl DeskImageApp {
     }
     
     fn create_desktop_entry(&mut self) {
+        println!("Creating desktop entry...");
+        
         if let Some(appimage_path) = &self.appimage_path {
             if !appimage_path.exists() {
-                self.status_message = "❌ File not found.".to_string();
+                println!("File not found: {}", appimage_path.display());
+                self.update_status(format!("ERROR: File not found: {}", appimage_path.display()));
                 return;
             }
 
-            let original_name = appimage_path.file_name().unwrap().to_string_lossy();
+            let original_name = match appimage_path.file_name() {
+                Some(name) => name.to_string_lossy(),
+                None => {
+                    println!("Invalid file path: no filename");
+                    self.update_status("ERROR: Invalid file path: no filename".to_string());
+                    return;
+                }
+            };
             let appname = self.clean_app_name(&original_name);
+            println!("App name: {}", appname);
 
-            if let Some(home_dir) = dirs::home_dir() {
-                let exec_target = home_dir.join(".local/bin").join(&appname);
-                
-                // Create directory if it doesn't exist
-                if let Err(e) = fs::create_dir_all(exec_target.parent().unwrap()) {
-                    self.status_message = format!("❌ Couldn't create directory: {}", e);
-                    return;
-                }
-                
-                // Copy AppImage to target location
-                if let Err(e) = fs::copy(appimage_path, &exec_target) {
-                    self.status_message = format!("❌ Couldn't copy file: {}", e);
-                    return;
-                }
-                
-                // Set executable permissions
-                if let Err(e) = fs::set_permissions(&exec_target, fs::Permissions::from_mode(0o755)) {
-                    self.status_message = format!("❌ Couldn't set permissions: {}", e);
-                    return;
-                }
+            match dirs::home_dir() {
+                Some(home_dir) => {
+                    let exec_target = home_dir.join(".local/bin").join(&appname);
+                    
+                    // Create directory if it doesn't exist
+                    match fs::create_dir_all(exec_target.parent().unwrap()) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("Couldn't create directory: {}", e);
+                            self.update_status(format!("ERROR: Couldn't create directory {}: {}", 
+                                exec_target.parent().unwrap().display(), e));
+                            return;
+                        }
+                    }
+                    
+                    // First, make sure the source AppImage is executable
+                    if !self.is_executable(appimage_path) {
+                        println!("Source AppImage is not executable, setting executable permissions");
+                        if let Err(e) = self.make_executable(appimage_path) {
+                            println!("Warning: Couldn't make source AppImage executable: {}", e);
+                            // Continue anyway, we'll set permissions on the target
+                        }
+                    } else {
+                        println!("Source AppImage is already executable");
+                    }
+                    
+                    // Then copy it to the target location
+                    match fs::copy(appimage_path, &exec_target) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("Couldn't copy file: {}", e);
+                            self.update_status(format!("ERROR: Couldn't copy file to {}: {}", 
+                                exec_target.display(), e));
+                            return;
+                        }
+                    }
+                    
+                    // Set executable permissions on the destination file
+                    match self.make_executable(&exec_target) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("Couldn't set permissions: {}", e);
+                            self.update_status(format!("ERROR: Couldn't set permissions on {}: {}", 
+                                exec_target.display(), e));
+                            return;
+                        }
+                    }
 
-                if let Some(data_dir) = dirs::data_dir() {
-                    let desktop_file_path = data_dir
-                        .join("applications")
-                        .join(format!("{}.desktop", appname));
+                    // First try XDG_DATA_HOME, then fallback to ~/.local/share
+                    let applications_dir = match dirs::data_dir() {
+                        Some(dir) => dir.join("applications"),
+                        None => home_dir.join(".local/share/applications"),
+                    };
+                    
+                    println!("Applications directory: {}", applications_dir.display());
+                    
+                    // Ensure the applications directory exists
+                    match fs::create_dir_all(&applications_dir) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("Couldn't create applications directory: {}", e);
+                            self.update_status(format!("ERROR: Couldn't create applications directory {}: {}", 
+                                applications_dir.display(), e));
+                            return;
+                        }
+                    }
+                    
+                    let desktop_file_path = applications_dir.join(format!("{}.desktop", appname));
+                    println!("Desktop file path: {}", desktop_file_path.display());
+                    
+                    // Check if the desktop entry already exists before we start
+                    let desktop_existed = desktop_file_path.exists();
+                    println!("Desktop file existed before: {}", desktop_existed);
                     
                     // Check if desktop entry already exists
                     let mut existing_icon = String::from("application-x-executable");
@@ -174,30 +266,29 @@ impl DeskImageApp {
                         // Copy the icon to the local icons directory if it exists
                         if icon_path.exists() {
                             let icon_filename = icon_path.file_name().unwrap().to_string_lossy();
+                            let icon_path_string = icon_path.to_string_lossy().to_string();
                             let icon_destination = home_dir
                                 .join(".local/share/icons")
                                 .join(&*icon_filename);
                             
                             // Create icons directory if it doesn't exist
+                            let icon_result = icon_path_string.clone();
                             if let Err(e) = fs::create_dir_all(icon_destination.parent().unwrap()) {
-                                self.status_message = format!("⚠️ Couldn't create icons directory: {}", e);
+                                println!("Couldn't create icons directory: {}", e);
+                                let warning = format!("WARNING: Couldn't create icons directory: {}", e);
+                                self.update_status(warning);
                                 // Continue with the original path as fallback
-                                icon_path.to_string_lossy().to_string()
+                                icon_result
                             } else {
                                 // Copy the icon file
                                 if let Err(e) = fs::copy(icon_path, &icon_destination) {
-                                    self.status_message = format!("⚠️ Couldn't copy icon: {}", e);
+                                    println!("Couldn't copy icon: {}", e);
+                                    let warning = format!("WARNING: Couldn't copy icon: {}", e);
+                                    self.update_status(warning);
                                     // Continue with the original path as fallback
-                                    icon_path.to_string_lossy().to_string()
+                                    icon_result
                                 } else {
-                                    // Use the icon name without path for the desktop entry
-                                    // If it's in the standard location, this is sufficient
-                                    let name_only = Path::new(&*icon_filename)
-                                        .file_stem().unwrap_or_default()
-                                        .to_string_lossy();
-                                        
-                                    // Try to use just the name without extension if it's in the standard location
-                                    // Otherwise use the full path
+                                    // Use the icon destination path
                                     icon_destination.to_string_lossy().to_string()
                                 }
                             }
@@ -231,32 +322,63 @@ impl DeskImageApp {
                         desktop_content.push_str(&format!("Comment={}\n", existing_comment));
                     }
                     
-                    // Create directory if it doesn't exist
-                    if let Err(e) = fs::create_dir_all(desktop_file_path.parent().unwrap()) {
-                        self.status_message = format!("❌ Couldn't create applications directory: {}", e);
-                        return;
+                    // Write the desktop file
+                    match fs::write(&desktop_file_path, desktop_content) {
+                        Ok(_) => {
+                            println!("Successfully wrote desktop file");
+                        },
+                        Err(e) => {
+                            println!("Couldn't write desktop file: {}", e);
+                            self.update_status(format!("ERROR: Couldn't write desktop file {}: {}", 
+                                desktop_file_path.display(), e));
+                            return;
+                        }
                     }
                     
-                    if let Err(e) = fs::write(&desktop_file_path, desktop_content) {
-                        self.status_message = format!("❌ Couldn't write desktop file: {}", e);
-                        return;
-                    }
-
-                    let message = if desktop_file_path.exists() {
-                        format!("✅ Desktop entry updated at: {}", desktop_file_path.display())
-                    } else {
-                        format!("✅ Desktop entry created at: {}", desktop_file_path.display())
+                    // Attempt to update the desktop database to make it immediately visible
+                    println!("Updating desktop database...");
+                    match Command::new("update-desktop-database")
+                        .arg(applications_dir.to_string_lossy().to_string())
+                        .status() {
+                        Ok(status) => println!("update-desktop-database exited with: {}", status),
+                        Err(e) => println!("Failed to run update-desktop-database: {}", e),
                     };
-                    
-                    self.status_message = message;
-                } else {
-                    self.status_message = "❌ Couldn't find data directory.".to_string();
+
+                    // Update the icon cache using gtk-update-icon-cache if available
+                    println!("Updating icon cache...");
+                    match Command::new("gtk-update-icon-cache")
+                        .arg("-f")
+                        .arg("-t")
+                        .arg(home_dir.join(".local/share/icons"))
+                        .status() {
+                        Ok(status) => println!("gtk-update-icon-cache exited with: {}", status),
+                        Err(e) => println!("Failed to run gtk-update-icon-cache: {}", e),
+                    };
+
+                    // Verify the desktop entry was created successfully
+                    match fs::metadata(&desktop_file_path) {
+                        Ok(_) => {
+                            println!("Successfully verified desktop entry exists");
+                            let message = if desktop_existed {
+                                format!("SUCCESS: Desktop entry updated at: {}", desktop_file_path.display())
+                            } else {
+                                format!("SUCCESS: Desktop entry created at: {}", desktop_file_path.display())
+                            };
+                            println!("Setting status message: {}", message);
+                            self.update_status(message);
+                        },
+                        Err(e) => {
+                            println!("Failed to verify desktop entry: {}", e);
+                            self.update_status(format!("ERROR: Desktop entry may not have been created properly. Error: {}", e));
+                        }
+                    }
+                },
+                None => {
+                    self.update_status("❌ Couldn't find home directory.".to_string());
                 }
-            } else {
-                self.status_message = "❌ Couldn't find home directory.".to_string();
             }
         } else {
-            self.status_message = "❌ No AppImage selected.".to_string();
+            self.update_status("❌ No AppImage selected.".to_string());
         }
     }
 
@@ -267,6 +389,21 @@ impl DeskImageApp {
             .next()
             .unwrap_or(filename);
         base.to_string()
+    }
+
+    // Helper function to check if a file is executable
+    fn is_executable<P: AsRef<Path>>(&self, path: P) -> bool {
+        if let Ok(metadata) = fs::metadata(&path) {
+            let permissions = metadata.permissions();
+            let mode = permissions.mode();
+            return mode & 0o111 != 0; // Check if any executable bit is set
+        }
+        false
+    }
+
+    // Helper function to make a file executable
+    fn make_executable<P: AsRef<Path>>(&self, path: P) -> Result<(), std::io::Error> {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
     }
 }
 
@@ -292,6 +429,24 @@ impl eframe::App for DeskImageApp {
         
         // Apply the style
         ctx.set_style(style);
+        
+        // Store current status to detect changes
+        let previous_status = self.status_message.clone();
+        
+        // We need to keep updating the UI to animate status messages
+        if self.status_visible {
+            // Check if we need to repaint the UI
+            const STATUS_DURATION: std::time::Duration = std::time::Duration::from_secs(10);
+            let time_since_status = self.status_timestamp.elapsed();
+            
+            if time_since_status < STATUS_DURATION {
+                // Request continuous repaints while the status is visible
+                ctx.request_repaint();
+            } else {
+                // Keep status visible but stop continuous repaints after duration
+                self.status_visible = false;
+            }
+        }
         
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
@@ -429,6 +584,12 @@ impl eframe::App for DeskImageApp {
                             });
                             
                             if ui.add_enabled(self.appimage_path.is_some(), create_button).clicked() {
+                                println!("Create Desktop Entry button clicked");
+                                
+                                // Change the status message immediately to show we're processing
+                                self.update_status("Processing...".to_string());
+                                
+                                // Then create the desktop entry
                                 self.create_desktop_entry();
                             }
                         });
@@ -437,21 +598,47 @@ impl eframe::App for DeskImageApp {
                 ui.add_space(25.0);
                 
                 // Status message with more visual separation and styling
-                let (status_color, status_bg, status_border) = if self.status_message.starts_with("✅") {
+                let (status_color, status_bg, status_border) = if self.status_message.starts_with("SUCCESS") {
                     (Color32::from_rgb(180, 255, 180), Color32::from_rgb(25, 45, 30), Color32::from_rgb(60, 120, 80))
-                } else if self.status_message.starts_with("❌") {
+                } else if self.status_message.starts_with("ERROR") {
                     (Color32::from_rgb(255, 180, 180), Color32::from_rgb(45, 25, 30), Color32::from_rgb(120, 60, 80))
+                } else if self.status_message.starts_with("WARNING") {
+                    (Color32::from_rgb(255, 220, 150), Color32::from_rgb(45, 35, 20), Color32::from_rgb(120, 90, 40))
                 } else {
                     (Color32::from_rgb(220, 220, 220), Color32::from_rgb(35, 35, 45), Color32::from_rgb(70, 70, 90))
                 };
                 
+                // Create pulsing effect for new status messages
+                let border_width = if self.status_visible {
+                    // Calculate a pulsing border width between 1.0 and 3.0
+                    let time_since_status = self.status_timestamp.elapsed().as_secs_f32();
+                    let pulse = (time_since_status * 3.0).sin() * 0.5 + 0.5; // oscillate between 0.0 and 1.0
+                    1.0 + pulse * 2.0 // between 1.0 and 3.0
+                } else {
+                    1.0 // default border width
+                };
+                
+                // Debug text to show in UI
+                let debug_text = format!(
+                    "Status Message: {}\nStatus age: {:.1}s\nVisible: {}", 
+                    self.status_message,
+                    self.status_timestamp.elapsed().as_secs_f32(),
+                    self.status_visible
+                );
+                
                 egui::Frame::new()
                     .fill(status_bg)
                     .corner_radius(10)
-                    .stroke(Stroke::new(1.0, status_border))
-                    .inner_margin(15.0)
+                    .stroke(Stroke::new(border_width, status_border)) // Make border pulse
+                    .inner_margin(20.0) // Increase margin
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&self.status_message).size(14.0).color(status_color));
+                        ui.vertical(|ui| {
+                            ui.heading(RichText::new(&self.status_message).size(16.0).color(status_color).strong());
+                            
+                            // Display debug info in smaller text
+                            ui.add_space(10.0);
+                            ui.label(RichText::new(&debug_text).size(12.0).color(Color32::from_rgb(180, 180, 180)));
+                        });
                     });
                 
                 ui.add_space(20.0);
@@ -463,6 +650,14 @@ impl eframe::App for DeskImageApp {
                 });
             });
         });
+        
+        // If status message changed, update the timestamp and visibility
+        if previous_status != self.status_message {
+            println!("Status message changed: {}", self.status_message);
+            self.status_timestamp = std::time::Instant::now();
+            self.status_visible = true;
+            ctx.request_repaint();
+        }
     }
 }
 
